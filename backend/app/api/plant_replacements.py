@@ -2,7 +2,7 @@
 
 from flask import Blueprint, request
 
-from ..schemas import validate_plant_replacement
+from ..schemas import validate_plant_replacement, validate_replacement_import
 from ..schemas.filters import replacement_filters
 from ..services import PlantReplacementService
 from ..utils.pagination import paginate, parse_page_args
@@ -25,6 +25,26 @@ def list_replacements():
 @bp.get("/plant-replacements/summary")
 def replacement_summary():
     return ok(PlantReplacementService.summary(replacement_filters(request.args)))
+
+
+@bp.get("/plant-replacements/cost-summary")
+def replacement_cost_summary():
+    """费用归集：按绿地与按月汇总更换费用。"""
+
+    return ok(PlantReplacementService.cost_summary(replacement_filters(request.args)))
+
+
+@bp.post("/plant-replacements/imports")
+def import_replacements():
+    """批量导入：同一批次重复提交不会重复入账。"""
+
+    payload = validate_replacement_import(json_body())
+    result = PlantReplacementService.import_batch(payload["batch_no"], payload["items"])
+    message = (
+        f"导入完成：新增 {result['created_count']} 条，"
+        f"跳过已存在 {result['skipped_count']} 条"
+    )
+    return ok(result, message=message)
 
 
 @bp.post("/plant-replacements")

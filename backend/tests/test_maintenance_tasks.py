@@ -58,7 +58,11 @@ def test_list_includes_record_progress(api, make_task, make_record):
     make_record(task=task, quality_result="pending", record_date=date(2026, 3, 18))
 
     data = api.data(api.get("/api/v1/maintenance-tasks", green_space_id=task.green_space_id))
-    assert data["items"][0]["progress"] == {"record_count": 2, "qualified_count": 1}
+    assert data["items"][0]["progress"] == {
+        "record_count": 2,
+        "qualified_count": 1,
+        "replacement_count": 0,
+    }
 
 
 def test_status_transition_records_completed_at(api, make_task):
@@ -100,9 +104,24 @@ def test_detail_returns_records_and_progress(api, make_task, make_record, make_r
     data = api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))
     assert data["progress"]["record_count"] == 1
     assert data["progress"]["total_work_hours"] == 6.0
+    assert data["progress"]["replacement_count"] == 1
     assert data["progress"]["replacement_quantity"] == 24.0
     assert data["progress"]["replacement_amount"] == 2400.0
     assert data["records"][0]["record_no"].startswith("MR-")
+    # 任务详情可直接反查更换明细
+    assert len(data["replacements"]) == 1
+    assert data["replacements"][0]["replacement_no"].startswith("PR-")
+    assert data["replacements"][0]["amount"] == 2400.0
+
+
+def test_list_includes_replacement_count(api, make_task, make_record, make_replacement):
+    task = make_task()
+    record = make_record(task=task)
+    make_replacement(record=record)
+    make_replacement(record=record)
+
+    data = api.data(api.get("/api/v1/maintenance-tasks", green_space_id=task.green_space_id))
+    assert data["items"][0]["progress"]["replacement_count"] == 2
 
 
 def test_delete_task_requires_force_when_records_exist(api, make_task, make_record):
@@ -112,10 +131,37 @@ def test_delete_task_requires_force_when_records_exist(api, make_task, make_reco
     assert response.status_code == 409
 
     data = api.data(api.delete(f"/api/v1/maintenance-tasks/{task.id}", force="true"))
-    assert data == {"detached_records": 1}
+    assert data == {"detached_records": 1, "kept_replacements": 0}
     # 强制删除后养护记录保留，仅解除关联
     records = api.data(api.get("/api/v1/maintenance-records", unlinked="true"))
     assert records["meta"]["total"] == 1
+
+
+def test_delete_task_reports_and_preserves_replacements(
+    api, make_task, make_record, make_replacement
+):
+    """删任务时更换记录的去向必须明确：计数告知调用方，记录本身保留且链路可查。"""
+
+    task = make_task()
+    record = make_record(task=task)
+    replacement = make_replacement(record=record, quantity=8, unit_price=25)
+
+    response = api.delete(f"/api/v1/maintenance-tasks/{task.id}")
+    assert response.status_code == 409
+    body = response.get_json()
+    assert body["data"] == {"maintenance_record": 1, "plant_replacement": 1}
+    assert "1 条绿植更换记录" in body["message"]
+
+    data = api.data(api.delete(f"/api/v1/maintenance-tasks/{task.id}", force="true"))
+    assert data == {"detached_records": 1, "kept_replacements": 1}
+
+    # 任务已删除，但更换记录仍挂在养护记录下，可继续顺查到绿地与登记信息
+    detail = api.data(api.get(f"/api/v1/plant-replacements/{replacement.id}"))
+    assert detail["record"]["record_no"] == record.record_no
+    assert detail["record"]["task"] is None
+    assert detail["green_space"]["id"] == task.green_space_id
+    record_detail = api.data(api.get(f"/api/v1/maintenance-records/{record.id}"))
+    assert [item["id"] for item in record_detail["replacements"]] == [replacement.id]
 
 
 def test_update_task_rejects_unknown_enum(api, make_task):

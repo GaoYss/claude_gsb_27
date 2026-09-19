@@ -176,16 +176,22 @@ async function changeStatus(row, status) {
 
 async function remove(row) {
   try {
-    const hasRecords = row.progress.record_count > 0
+    const recordCount = row.progress.record_count || 0
+    const replacementCount = row.progress.replacement_count || 0
+    const hasLinked = recordCount > 0 || replacementCount > 0
     await ElMessageBox.confirm(
-      hasRecords
-        ? `该任务已登记 ${row.progress.record_count} 条养护记录，删除任务后养护记录会保留但不再关联任务，是否继续？`
+      hasLinked
+        ? `该任务已登记 ${recordCount} 条养护记录、${replacementCount} 条绿植更换记录，` +
+          '删除任务后这些记录都会保留，仅解除与任务的关联，是否继续？'
         : `确认删除任务「${row.title}」吗？`,
       '删除确认',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
-    await maintenanceTaskApi.remove(row.id, hasRecords ? { force: true } : undefined)
-    ElMessage.success('养护任务已删除')
+    const result = await maintenanceTaskApi.remove(row.id, hasLinked ? { force: true } : undefined)
+    const kept = []
+    if (result?.detached_records) kept.push(`${result.detached_records} 条养护记录`)
+    if (result?.kept_replacements) kept.push(`${result.kept_replacements} 条更换记录`)
+    ElMessage.success(kept.length ? `养护任务已删除，${kept.join('、')}已保留` : '养护任务已删除')
     await load()
   } catch (error) {
     if (error === 'cancel' || error === 'close') return

@@ -2,9 +2,17 @@
   <div class="page">
     <PageHeader title="绿植更换记录" description="登记绿地内植株的更换、补植与品种改造，自动核算更换金额">
       <template #actions>
+        <el-button :icon="'Upload'" @click="importDialog.open()">批量导入</el-button>
         <el-button type="primary" :icon="'Plus'" @click="formDialog.open()">登记更换记录</el-button>
       </template>
     </PageHeader>
+
+    <el-alert v-if="filters.task_id" type="info" class="task-filter-alert" :closable="false">
+      <div class="task-filter-content">
+        <span>正在查看任务 {{ taskHint || `#${filters.task_id}` }} 关联的更换明细</span>
+        <el-button link type="primary" @click="clearTaskFilter">清除筛选</el-button>
+      </div>
+    </el-alert>
 
     <div class="panel">
       <div class="filter-bar">
@@ -58,6 +66,8 @@
               <span><b>供苗单位：</b>{{ row.supplier || '-' }}</span>
               <span><b>登记人：</b>{{ row.operator || '-' }}</span>
               <span><b>关联养护记录：</b>{{ row.record ? `${row.record.record_no}（${formatDate(row.record.record_date)}）` : '未关联' }}</span>
+              <span><b>关联任务：</b>{{ row.record?.task ? `${row.record.task.task_no} ${row.record.task.title}` : '未关联' }}</span>
+              <span><b>导入批次：</b>{{ row.import_batch ? `${row.import_batch}（行 ${row.import_line}）` : '手工登记' }}</span>
               <span><b>登记时间：</b>{{ formatDateTime(row.created_at) }}</span>
               <span v-if="row.remark"><b>备注：</b>{{ row.remark }}</span>
             </div>
@@ -136,12 +146,44 @@
       </el-table>
     </div>
 
-    <ReplacementFormDialog ref="formDialog" @saved="load" />
+    <div class="panel">
+      <div class="table-toolbar">
+        <span class="panel-title">更换费用归集</span>
+        <span class="summary-text">按当前筛选条件，归集到绿地与月份</span>
+      </div>
+      <div class="cost-grid">
+        <el-table :data="costSummary?.by_green_space || []" size="small" border empty-text="暂无数据">
+          <el-table-column label="绿地" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.code }} {{ row.name }}</template>
+          </el-table-column>
+          <el-table-column prop="count" label="记录条数" width="90" />
+          <el-table-column label="更换数量" width="110">
+            <template #default="{ row }">{{ formatNumber(row.quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="费用金额" width="130" align="right">
+            <template #default="{ row }">{{ formatCurrency(row.amount) }}</template>
+          </el-table-column>
+        </el-table>
+        <el-table :data="costSummary?.by_month || []" size="small" border empty-text="暂无数据">
+          <el-table-column prop="month" label="月份" width="110" />
+          <el-table-column prop="count" label="记录条数" width="90" />
+          <el-table-column label="更换数量" width="110">
+            <template #default="{ row }">{{ formatNumber(row.quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="费用金额" align="right">
+            <template #default="{ row }">{{ formatCurrency(row.amount) }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </div>
+
+    <ReplacementFormDialog ref="formDialog" @saved="reloadAll" />
+    <ReplacementImportDialog ref="importDialog" @saved="reloadAll" />
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -155,25 +197,65 @@ import { useListQuery } from '@/composables/useListQuery'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/format'
 
 import ReplacementFormDialog from './ReplacementFormDialog.vue'
+import ReplacementImportDialog from './ReplacementImportDialog.vue'
 
 const route = useRoute()
 const formDialog = ref(null)
+const importDialog = ref(null)
 const dateRange = ref([])
+const taskHint = ref(route.query.task_no || '')
 
 const { options: categoryOptions } = useEnumOptions('plant_category')
 const { options: reasonOptions } = useEnumOptions('replacement_reason')
 
-const { filters, meta, items, summary, loading, load, search, resetFilters, handlePageChange, handleSizeChange } =
+const { filters, meta, items, summary, loading, load, search: searchList, resetFilters, handlePageChange, handleSizeChange } =
   useListQuery(plantReplacementApi.list, {
     initialFilters: {
       keyword: '',
       green_space_id: route.query.green_space_id ? Number(route.query.green_space_id) : null,
       plant_category: '',
       reason: '',
+      task_id: route.query.task_id ? Number(route.query.task_id) : null,
       date_from: '',
       date_to: '',
     },
   })
+
+const costSummary = ref(null)
+
+function activeParams() {
+  const params = {}
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== '') params[key] = value
+  })
+  return params
+}
+
+async function loadCostSummary() {
+  try {
+    costSummary.value = await plantReplacementApi.costSummary(activeParams())
+  } catch {
+    costSummary.value = null
+  }
+}
+
+function search() {
+  loadCostSummary()
+  return searchList()
+}
+
+function reloadAll() {
+  loadCostSummary()
+  return load()
+}
+
+function clearTaskFilter() {
+  filters.task_id = null
+  taskHint.value = ''
+  search()
+}
+
+onMounted(loadCostSummary)
 
 const topReason = computed(() => {
   const rows = [...(summary.value?.by_reason || [])]
@@ -195,7 +277,9 @@ function onDateChange(value) {
 
 function reset() {
   dateRange.value = []
+  taskHint.value = ''
   resetFilters()
+  loadCostSummary()
 }
 
 async function remove(row) {
@@ -207,7 +291,7 @@ async function remove(row) {
     })
     await plantReplacementApi.remove(row.id)
     ElMessage.success('绿植更换记录已删除')
-    await load()
+    await reloadAll()
   } catch (error) {
     if (error === 'cancel' || error === 'close') return
   }
@@ -226,6 +310,22 @@ async function remove(row) {
 
 .amount-missing {
   color: #e6a23c;
+}
+
+.task-filter-alert {
+  margin-bottom: 16px;
+}
+
+.task-filter-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cost-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 16px;
 }
 
 .expand-detail {

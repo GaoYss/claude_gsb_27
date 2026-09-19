@@ -90,7 +90,7 @@ class MaintenanceTaskService(BaseService):
     # ------------------------------------------------------------ 查询
     @classmethod
     def list_tasks(cls, filters, args):
-        """列表查询：附带每条任务的养护记录进度，便于一眼看出执行情况。"""
+        """列表查询：附带每条任务的养护记录进度与更换记录数，便于一眼看出执行情况。"""
 
         record_count = (
             db.select(func.count(MaintenanceRecord.id))
@@ -107,10 +107,18 @@ class MaintenanceTaskService(BaseService):
             .correlate(MaintenanceTask)
             .scalar_subquery()
         )
+        replacement_count = (
+            db.select(func.count(PlantReplacement.id))
+            .join(MaintenanceRecord, PlantReplacement.maintenance_record_id == MaintenanceRecord.id)
+            .where(MaintenanceRecord.task_id == MaintenanceTask.id)
+            .correlate(MaintenanceTask)
+            .scalar_subquery()
+        )
         query = db.session.query(
             MaintenanceTask,
             record_count.label("record_count"),
             qualified_count.label("qualified_count"),
+            replacement_count.label("replacement_count"),
         )
         query = cls._apply_filters(query, filters)
         query = query.order_by(parse_sort(args, cls.SORTABLE, MaintenanceTask.plan_date.desc()))
@@ -118,11 +126,12 @@ class MaintenanceTaskService(BaseService):
 
     @classmethod
     def serialize_row(cls, row):
-        task, record_count, qualified_count = row
+        task, record_count, qualified_count, replacement_count = row
         data = task.to_dict()
         data["progress"] = {
             "record_count": record_count or 0,
             "qualified_count": qualified_count or 0,
+            "replacement_count": replacement_count or 0,
         }
         return data
 
@@ -135,23 +144,29 @@ class MaintenanceTaskService(BaseService):
             .order_by(MaintenanceRecord.record_date.desc(), MaintenanceRecord.id.desc())
             .all()
         )
-        replacement_stats = db.session.query(
-            func.count(PlantReplacement.id),
-            func.coalesce(func.sum(PlantReplacement.quantity), 0),
-            func.coalesce(func.sum(PlantReplacement.amount), 0),
-        ).join(MaintenanceRecord, PlantReplacement.maintenance_record_id == MaintenanceRecord.id) \
-            .filter(MaintenanceRecord.task_id == task.id).one()
+        replacements = (
+            db.session.query(PlantReplacement)
+            .join(MaintenanceRecord, PlantReplacement.maintenance_record_id == MaintenanceRecord.id)
+            .filter(MaintenanceRecord.task_id == task.id)
+            .order_by(PlantReplacement.replace_date.desc(), PlantReplacement.id.desc())
+            .all()
+        )
 
         data = task.to_dict(detail=True)
         data["records"] = [item.to_dict() for item in records]
+        data["replacements"] = [item.to_dict() for item in replacements]
         data["progress"] = {
             "record_count": len(records),
             "qualified_count": sum(1 for item in records if item.quality_result == "qualified"),
             "unqualified_count": sum(1 for item in records if item.quality_result == "unqualified"),
             "total_work_hours": to_float(sum((item.work_hours or 0) for item in records)) or 0,
-            "replacement_count": replacement_stats[0] or 0,
-            "replacement_quantity": to_float(replacement_stats[1]) or 0,
-            "replacement_amount": to_float(replacement_stats[2]) or 0,
+            "replacement_count": len(replacements),
+            "replacement_quantity": to_float(
+                sum((item.quantity or 0) for item in replacements)
+            ) or 0,
+            "replacement_amount": to_float(
+                sum((item.amount or 0) for item in replacements)
+            ) or 0,
             "last_record_date": format_date(records[0].record_date) if records else None,
         }
         return data
@@ -195,6 +210,13 @@ class MaintenanceTaskService(BaseService):
     # ------------------------------------------------------------ 删除
     @classmethod
     def delete(cls, obj_id, force=False):
+        """删除任务。
+
+        任务下的养护记录与绿植更换记录一律保留：养护记录解除任务关联，
+        更换记录仍挂在原养护记录下，费用归集与追溯链路不受影响。
+        删除前会把受影响的记录数告知调用方，需 force 确认。
+        """
+
         task = cls.get(obj_id)
         record_count = (
             db.session.query(func.count(MaintenanceRecord.id))
@@ -202,19 +224,30 @@ class MaintenanceTaskService(BaseService):
             .scalar()
             or 0
         )
-        if record_count and not force:
+        replacement_count = (
+            db.session.query(func.count(PlantReplacement.id))
+            .join(MaintenanceRecord, PlantReplacement.maintenance_record_id == MaintenanceRecord.id)
+            .filter(MaintenanceRecord.task_id == task.id)
+            .scalar()
+            or 0
+        )
+        if (record_count or replacement_count) and not force:
             raise ConflictError(
-                f"该任务已登记 {record_count} 条养护记录，请确认后再删除",
-                details={"maintenance_record": record_count},
+                f"该任务已登记 {record_count} 条养护记录、{replacement_count} 条绿植更换记录，"
+                "删除任务后这些记录会保留并解除任务关联，请确认后再删除",
+                details={
+                    "maintenance_record": record_count,
+                    "plant_replacement": replacement_count,
+                },
             )
         if record_count:
-            # 强制删除时保留养护记录，仅解除任务关联，避免历史数据丢失
+            # 保留养护履历，仅解除任务关联；更换记录随养护记录一并留存
             db.session.query(MaintenanceRecord).filter(
                 MaintenanceRecord.task_id == task.id
             ).update({MaintenanceRecord.task_id: None}, synchronize_session=False)
         db.session.delete(task)
         db.session.commit()
-        return {"detached_records": record_count}
+        return {"detached_records": record_count, "kept_replacements": replacement_count}
 
     @classmethod
     def status_summary(cls):

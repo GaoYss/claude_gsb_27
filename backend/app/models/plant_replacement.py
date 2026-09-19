@@ -11,6 +11,10 @@ class PlantReplacement(TimestampMixin, db.Model):
     """绿植更换记录：绿地内植株的更换、补植与品种改造。"""
 
     __tablename__ = "plant_replacement"
+    __table_args__ = (
+        # 同一导入批次内行号唯一：重复导入同一批数据时据此判重，不会重复入账
+        db.UniqueConstraint("import_batch", "import_line", name="uq_replacement_import_line"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     replacement_no = db.Column(db.String(32), nullable=False, unique=True, index=True)
@@ -35,10 +39,29 @@ class PlantReplacement(TimestampMixin, db.Model):
     unit_price = db.Column(amount_column())
     amount = db.Column(amount_column())
     operator = db.Column(db.String(64))
+    import_batch = db.Column(db.String(64), index=True)
+    import_line = db.Column(db.String(64))
     remark = db.Column(db.Text)
 
     green_space = db.relationship("GreenSpace", back_populates="replacements", lazy="joined")
     record = db.relationship("MaintenanceRecord", back_populates="replacements")
+
+    def _record_brief(self):
+        """关联养护记录摘要：连同所属任务一起带出，保证更换→记录→任务链路可顺查。"""
+
+        if self.record is None:
+            return None
+        task = self.record.task
+        return {
+            "id": self.record.id,
+            "record_no": self.record.record_no,
+            "record_date": format_date(self.record.record_date),
+            "task": (
+                {"id": task.id, "task_no": task.task_no, "title": task.title}
+                if task
+                else None
+            ),
+        }
 
     def to_dict(self, detail=False):
         data = {
@@ -47,15 +70,7 @@ class PlantReplacement(TimestampMixin, db.Model):
             "green_space_id": self.green_space_id,
             "green_space": self.green_space.to_brief() if self.green_space else None,
             "maintenance_record_id": self.maintenance_record_id,
-            "record": (
-                {
-                    "id": self.record.id,
-                    "record_no": self.record.record_no,
-                    "record_date": format_date(self.record.record_date),
-                }
-                if self.record
-                else None
-            ),
+            "record": self._record_brief(),
             "plant_name": self.plant_name,
             "plant_category": self.plant_category,
             "plant_category_label": PLANT_CATEGORY.label(self.plant_category),
@@ -74,6 +89,8 @@ class PlantReplacement(TimestampMixin, db.Model):
             "unit_price": to_float(self.unit_price),
             "amount": to_float(self.amount),
             "operator": self.operator,
+            "import_batch": self.import_batch,
+            "import_line": self.import_line,
             "created_at": format_datetime(self.created_at),
             "updated_at": format_datetime(self.updated_at),
         }

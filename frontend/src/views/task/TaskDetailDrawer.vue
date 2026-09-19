@@ -51,6 +51,28 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div class="table-toolbar">
+        <span class="panel-title">绿植更换明细</span>
+        <el-button v-if="detail.replacements?.length" link type="primary"
+                   @click="goReplacements">在绿植更换中查看</el-button>
+      </div>
+      <el-table :data="detail.replacements || []" size="small" border empty-text="该任务还没有关联的更换记录">
+        <el-table-column prop="replacement_no" label="编号" width="150" />
+        <el-table-column prop="plant_name" label="植株" width="120" />
+        <el-table-column label="数量" width="100">
+          <template #default="{ row }">{{ formatNumber(row.quantity) }} {{ row.unit_label }}</template>
+        </el-table-column>
+        <el-table-column label="更换原因" width="110">
+          <template #default="{ row }">
+            <EnumTag group="replacement_reason" :value="row.reason" :label="row.reason_label" />
+          </template>
+        </el-table-column>
+        <el-table-column prop="replace_date" label="更换日期" width="105" />
+        <el-table-column label="金额" align="right">
+          <template #default="{ row }">{{ formatCurrency(row.amount) }}</template>
+        </el-table-column>
+      </el-table>
     </div>
 
     <template #footer>
@@ -102,6 +124,14 @@ function close() {
 
 function goRecords() {
   router.push({ name: 'record-list', query: { task_id: currentId.value } })
+  close()
+}
+
+function goReplacements() {
+  router.push({
+    name: 'replacement-list',
+    query: { task_id: currentId.value, task_no: detail.value.task_no },
+  })
   close()
 }
 

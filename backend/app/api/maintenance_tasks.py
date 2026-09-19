@@ -54,4 +54,12 @@ def change_task_status(task_id):
 def delete_task(task_id):
     force = query_flag("force")
     result = MaintenanceTaskService.delete(task_id, force=force)
-    return ok(result, message="养护任务已删除")
+    kept = []
+    if result["detached_records"]:
+        kept.append(f"{result['detached_records']} 条养护记录")
+    if result["kept_replacements"]:
+        kept.append(f"{result['kept_replacements']} 条绿植更换记录")
+    message = "养护任务已删除"
+    if kept:
+        message += f"，{'、'.join(kept)}已保留并解除任务关联"
+    return ok(result, message=message)

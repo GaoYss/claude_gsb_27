@@ -1,5 +1,7 @@
 """绿植更换记录接口测试。"""
 
+from datetime import date
+
 
 def replacement_payload(space_id, **overrides):
     payload = {
@@ -110,3 +112,67 @@ def test_delete_replacement(api, make_replacement):
     replacement = make_replacement()
     api.delete(f"/api/v1/plant-replacements/{replacement.id}")
     assert api.get(f"/api/v1/plant-replacements/{replacement.id}").status_code == 404
+
+
+def test_detail_traces_record_and_task(api, make_task, make_record, make_replacement):
+    """顺查链路：更换记录 → 养护记录 → 任务，一跳都不能断。"""
+
+    task = make_task()
+    record = make_record(task=task)
+    replacement = make_replacement(record=record, supplier="萧山苗木合作社", operator="王海涛")
+
+    data = api.data(api.get(f"/api/v1/plant-replacements/{replacement.id}"))
+    assert data["green_space"]["id"] == task.green_space_id
+    assert data["record"]["record_no"] == record.record_no
+    assert data["record"]["task"]["task_no"] == task.task_no
+    assert data["supplier"] == "萧山苗木合作社"
+    assert data["operator"] == "王海涛"
+
+
+def test_list_filters_by_task(api, make_task, make_record, make_replacement):
+    task = make_task()
+    record = make_record(task=task)
+    linked = make_replacement(record=record)
+    make_replacement(space=task.green_space)  # 同绿地但未关联任务
+    make_replacement()  # 其他绿地
+
+    data = api.data(api.get("/api/v1/plant-replacements", task_id=task.id))
+    assert data["meta"]["total"] == 1
+    assert data["items"][0]["id"] == linked.id
+
+
+def test_cost_summary_groups_by_space_and_month(api, make_space, make_replacement):
+    space_a = make_space(name="滨河公园")
+    space_b = make_space(name="文体中心绿地")
+    make_replacement(space=space_a, quantity=10, unit_price=100, replace_date=date(2026, 3, 5))
+    make_replacement(space=space_a, quantity=4, unit_price=50, replace_date=date(2026, 4, 11))
+    make_replacement(space=space_b, quantity=6, unit_price=80, replace_date=date(2026, 3, 20))
+
+    data = api.data(api.get("/api/v1/plant-replacements/cost-summary"))
+
+    by_space = {item["name"]: item for item in data["by_green_space"]}
+    assert by_space["滨河公园"]["count"] == 2
+    assert by_space["滨河公园"]["amount"] == 1200.0
+    assert by_space["文体中心绿地"]["amount"] == 480.0
+
+    by_month = {item["month"]: item for item in data["by_month"]}
+    assert by_month["2026-03"]["count"] == 2
+    assert by_month["2026-03"]["amount"] == 1480.0
+    assert by_month["2026-04"]["amount"] == 200.0
+
+
+def test_cost_summary_respects_date_and_space_filters(api, make_space, make_replacement):
+    space_a = make_space(name="滨河公园")
+    make_replacement(space=space_a, quantity=10, unit_price=100, replace_date=date(2026, 3, 5))
+    make_replacement(space=space_a, quantity=4, unit_price=50, replace_date=date(2026, 5, 11))
+    make_replacement(quantity=6, unit_price=80, replace_date=date(2026, 3, 20))
+
+    data = api.data(api.get(
+        "/api/v1/plant-replacements/cost-summary",
+        green_space_id=space_a.id,
+        date_from="2026-03-01",
+        date_to="2026-03-31",
+    ))
+    assert len(data["by_green_space"]) == 1
+    assert data["by_green_space"][0]["amount"] == 1000.0
+    assert [item["month"] for item in data["by_month"]] == ["2026-03"]

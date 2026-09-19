@@ -15,7 +15,7 @@
 | 绿地台账 | `/green-spaces` | 绿地建档（编号自动生成）、按行政区/类型/等级/状态/关键字检索、档案详情（概览 + 近期任务/记录/更换 + 更换原因汇总）、删除保护 |
 | 养护任务 | `/tasks` | 任务登记（编号按日生成）、按状态/类型/优先级/绿地/计划日期区间/逾期筛选、状态流转（待执行→进行中→已完成/已取消）、任务详情与执行进度 |
 | 养护记录 | `/records` | 记录录入（可关联任务，也可登记日常巡查）、工时/天气/材料/质量评定、质量分布与工时汇总、记录详情 |
-| 绿植更换 | `/replacements` | 更换登记（植株、类别、规格、数量、原因、原植株状况、供苗单位、单价与金额）、按类别/原因统计与占比、按绿地/日期区间筛选 |
+| 绿植更换 | `/replacements` | 更换登记（植株、类别、规格、数量、原因、原植株状况、供苗单位、单价与金额）、按类别/原因统计与占比、按绿地/任务/日期区间筛选、费用按绿地与月份归集、批量导入（同批幂等，重复导入不重复入账） |
 
 ## 二、目录结构
 
@@ -151,14 +151,16 @@ cd frontend && npm run build && npm run preview
 | PUT | `/green-spaces/{id}` | 更新绿地（编号不可改） |
 | DELETE | `/green-spaces/{id}?force=true` | 删除绿地（有关联数据时需 `force`） |
 | GET/POST | `/maintenance-tasks` | 任务列表 / 登记任务（`status`/`task_type`/`priority`/`green_space_id`/`date_from`/`date_to`/`overdue`） |
-| GET/PUT/DELETE | `/maintenance-tasks/{id}` | 任务详情（含执行进度与记录） / 更新 / 删除（有记录时需 `force`，记录会保留但解除关联） |
+| GET/PUT/DELETE | `/maintenance-tasks/{id}` | 任务详情（含执行进度、养护记录与更换明细） / 更新 / 删除（有记录时需 `force`，养护记录与更换记录保留并解除任务关联） |
 | PATCH | `/maintenance-tasks/{id}/status` | 任务状态流转 |
 | GET/POST | `/maintenance-records` | 记录列表（`task_id`/`green_space_id`/`quality_result`/`weather`/`unlinked`/日期区间，返回汇总） / 录入记录 |
 | GET/PUT/DELETE | `/maintenance-records/{id}` | 记录详情（含关联更换记录） / 更新 / 删除 |
 | GET | `/maintenance-records/summary` | 记录汇总（条数、工时、质量分布） |
-| GET/POST | `/plant-replacements` | 更换记录列表（`green_space_id`/`plant_category`/`reason`/日期区间，返回汇总） / 登记更换 |
-| GET/PUT/DELETE | `/plant-replacements/{id}` | 详情 / 更新 / 删除 |
+| GET/POST | `/plant-replacements` | 更换记录列表（`green_space_id`/`task_id`/`maintenance_record_id`/`plant_category`/`reason`/`import_batch`/日期区间，返回汇总） / 登记更换 |
+| GET/PUT/DELETE | `/plant-replacements/{id}` | 详情（顺查绿地、养护记录、任务、登记人、供苗单位） / 更新 / 删除 |
 | GET | `/plant-replacements/summary` | 更换汇总（按植物类别、更换原因） |
+| GET | `/plant-replacements/cost-summary` | 费用归集（按绿地、按月份统计数量与金额，支持列表同一套筛选） |
+| POST | `/plant-replacements/imports` | 批量导入（`batch_no` + 逐行 `line_no`，同批重复导入自动跳过不重复入账；任一行校验失败整批回滚） |
 | GET | `/statistics/dashboard` | 看板聚合数据（总览 + 分布 + 趋势 + 榜单 + 提醒 + 最近动态） |
 | GET | `/statistics/overview` `/distributions` `/trends` `/ranking` `/reminders` | 看板分项接口 |
 
@@ -173,8 +175,10 @@ cd frontend && npm run build && npm run preview
 3. **绿地归属一致性**：养护记录可只填绿地（日常养护）或只填任务（绿地自动跟随任务）；两者同时提供时必须属于同一绿地。更换记录若关联养护记录，必须是同一绿地的记录。
 4. **日期约束**：养护日期、更换日期不得早于绿地建成日期。
 5. **金额核算**：更换金额 = 数量 × 单价，由后端统一计算；未填单价时金额留空，前端提示补录。
-6. **删除保护**：删除绿地时若已存在任务/记录/更换数据会返回 409 并给出数量明细，需 `force=true` 才级联删除；删除任务时养护记录默认保留（解除关联），避免养护履历丢失。
-7. **字典单一来源**：所有枚举在 `backend/app/constants.py` 定义，前端通过 `/meta/enums` 获取并缓存，前后端不重复维护。
+6. **删除保护**：删除绿地时若已存在任务/记录/更换数据会返回 409 并给出数量明细，需 `force=true` 才级联删除；删除任务时养护记录与绿植更换记录一律保留（养护记录解除任务关联，更换记录仍挂在原养护记录下），409 响应与删除结果都会明确告知受影响的养护记录数与更换记录数，关联链路不会因任务删除而断裂。
+7. **更换记录追溯**：更换记录可顺查绿地、关联养护记录（含所属任务）、登记人与供苗单位；养护记录详情与任务详情均可反查关联的更换明细，列表接口支持按 `task_id` 过滤。
+8. **费用归集与幂等导入**：`/plant-replacements/cost-summary` 把更换费用按绿地与月份归集，支持绿地与日期区间筛选；批量导入以 `(batch_no, line_no)` 唯一约束判重，同一批重复导入自动跳过、费用不会重复入账，任一行校验失败则整批回滚。
+9. **字典单一来源**：所有枚举在 `backend/app/constants.py` 定义，前端通过 `/meta/enums` 获取并缓存，前后端不重复维护。
 
 ## 七、数据模型
 
@@ -183,22 +187,22 @@ cd frontend && npm run build && npm run preview
 | `green_space` | 绿地台账 | `code`(唯一)、`name`、`district`、`green_type`、`maintenance_grade`、`area_sqm`、`status`、`manager`、`established_date` |
 | `maintenance_task` | 养护任务 | `task_no`(唯一)、`green_space_id`、`task_type`、`plan_date`、`priority`、`executor`、`status`、`completed_at` |
 | `maintenance_record` | 养护记录 | `record_no`(唯一)、`task_id`(可空)、`green_space_id`、`record_date`、`work_content`、`worker`、`work_hours`、`weather`、`quality_result` |
-| `plant_replacement` | 绿植更换记录 | `replacement_no`(唯一)、`green_space_id`、`maintenance_record_id`(可空)、`plant_name`、`plant_category`、`quantity`、`unit`、`reason`、`unit_price`、`amount` |
+| `plant_replacement` | 绿植更换记录 | `replacement_no`(唯一)、`green_space_id`、`maintenance_record_id`(可空)、`plant_name`、`plant_category`、`quantity`、`unit`、`reason`、`supplier`、`operator`、`unit_price`、`amount`、`import_batch`、`import_line` |
 
-绿地删除时任务/记录/更换级联清理；任务与养护记录之间、养护记录与更换记录之间为可空外键（`SET NULL`），保证养护履历可独立留存。
+绿地删除时任务/记录/更换级联清理；任务与养护记录之间、养护记录与更换记录之间为可空外键（`SET NULL`），保证养护履历可独立留存。`(import_batch, import_line)` 唯一约束是批量导入幂等的依据：同一批次重复提交时按行号判重跳过，不会重复入账。
 
 ## 八、测试
 
 ```bash
 cd backend
-python -m pytest              # 52 个用例：接口、校验、跨模块规则、端到端流程
+python -m pytest              # 66 个用例：接口、校验、跨模块规则、端到端流程
 ```
 
-覆盖重点：绿地编号生成与唯一性、枚举与字段校验、列表过滤/排序/分页、任务状态自动流转与手动流转限制、记录删除后的状态回退、更换金额核算、删除保护与强制删除、统计聚合口径一致性、演示数据自洽性。
+覆盖重点：绿地编号生成与唯一性、枚举与字段校验、列表过滤/排序/分页、任务状态自动流转与手动流转限制、记录删除后的状态回退、更换金额核算、删除保护与强制删除（含更换记录去向）、更换记录顺查与任务/记录反查、费用按绿地与月份归集、批量导入幂等（重复导入不双计、行级校验整批回滚）、统计聚合口径一致性、演示数据自洽性。
 
 ## 九、常见问题
 
 - **前端页面正常但数据为空**：确认后端已启动且 `/api/v1/meta/health` 返回 `database: up`；容器方式下检查 `docker compose ps` 中 backend 是否 `healthy`。
 - **端口被占用**：修改 `.env` 中的 `FRONTEND_PORT` / `BACKEND_PORT`，或在本地开发时用 `flask --app wsgi run --port 5001` 并同步调整 `VITE_PROXY_TARGET`。
-- **数据库结构变更**：切换 `AUTO_CREATE_TABLES=false` 后使用 Flask-Migrate：`flask --app wsgi db init && flask --app wsgi db migrate -m "描述" && flask --app wsgi db upgrade`。
+- **数据库结构变更**：切换 `AUTO_CREATE_TABLES=false` 后使用 Flask-Migrate：`flask --app wsgi db init && flask --app wsgi db migrate -m "描述" && flask --app wsgi db upgrade`。注意 `plant_replacement` 表新增了 `import_batch` / `import_line` 列与 `(import_batch, import_line)` 唯一约束，已有数据库需迁移后批量导入功能才可用（`db.create_all()` 不会改已存在的表）。
 - **重置演示数据**：`flask --app wsgi seed --reset`；容器方式可执行 `docker compose exec backend flask --app wsgi seed --reset`。
