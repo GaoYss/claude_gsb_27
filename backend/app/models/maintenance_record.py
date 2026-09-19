@@ -33,9 +33,13 @@ class MaintenanceRecord(TimestampMixin, db.Model):
     issue_found = db.Column(db.Text)
     remark = db.Column(db.Text)
 
-    task = db.relationship("MaintenanceTask", back_populates="records")
+    task = db.relationship("MaintenanceTask", back_populates="records", foreign_keys=[task_id])
     green_space = db.relationship("GreenSpace", back_populates="records", lazy="joined")
-    replacements = db.relationship("PlantReplacement", back_populates="record")
+    replacements = db.relationship(
+        "PlantReplacement",
+        back_populates="record",
+        foreign_keys="PlantReplacement.maintenance_record_id",
+    )
 
     def to_dict(self, detail=False):
         data = {

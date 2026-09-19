@@ -58,7 +58,11 @@ def test_list_includes_record_progress(api, make_task, make_record):
     make_record(task=task, quality_result="pending", record_date=date(2026, 3, 18))
 
     data = api.data(api.get("/api/v1/maintenance-tasks", green_space_id=task.green_space_id))
-    assert data["items"][0]["progress"] == {"record_count": 2, "qualified_count": 1}
+    assert data["items"][0]["progress"] == {
+        "record_count": 2,
+        "qualified_count": 1,
+        "replacement_count": 0,
+    }
 
 
 def test_status_transition_records_completed_at(api, make_task):
@@ -110,10 +114,46 @@ def test_delete_task_requires_force_when_records_exist(api, make_task, make_reco
     make_record(task=task)
     response = api.delete(f"/api/v1/maintenance-tasks/{task.id}")
     assert response.status_code == 409
+    assert response.get_json()["data"] == {
+        "maintenance_record": 1,
+        "plant_replacement": 0,
+    }
 
     data = api.data(api.delete(f"/api/v1/maintenance-tasks/{task.id}", force="true"))
-    assert data == {"detached_records": 1}
+    assert data == {"detached_records": 1, "detached_replacements": 0}
     # 强制删除后养护记录保留，仅解除关联
+    records = api.data(api.get("/api/v1/maintenance-records", unlinked="true"))
+    assert records["meta"]["total"] == 1
+
+
+def test_delete_task_keeps_replacements_with_task_snapshot(api, make_task, make_record, make_replacement):
+    """删除任务：更换记录保留、解除关联，任务编号/名称快照不丢失。"""
+
+    task = make_task()
+    record = make_record(task=task)
+    replacement = make_replacement(record=record, quantity=24, unit_price=100)
+
+    # 未 force 时 409，并明确给出关联的更换明细数量
+    response = api.delete(f"/api/v1/maintenance-tasks/{task.id}")
+    assert response.status_code == 409
+    assert response.get_json()["data"]["plant_replacement"] == 1
+
+    result = api.data(api.delete(f"/api/v1/maintenance-tasks/{task.id}", force="true"))
+    assert result == {"detached_records": 1, "detached_replacements": 1}
+
+    # 更换记录仍在，仍归属原绿地、金额不变，task_id 已解除但快照保留
+    data = api.data(api.get(f"/api/v1/plant-replacements/{replacement.id}"))
+    assert data["task_id"] is None
+    assert data["task"] is None
+    assert data["task_snapshot"] == {
+        "task_no": task.task_no,
+        "title": task.title,
+        "deleted": True,
+    }
+    assert data["green_space_id"] == task.green_space_id
+    assert data["amount"] == 2400.0
+
+    # 记录被解除任务关联后保留
     records = api.data(api.get("/api/v1/maintenance-records", unlinked="true"))
     assert records["meta"]["total"] == 1
 

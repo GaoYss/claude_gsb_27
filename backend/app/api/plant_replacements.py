@@ -27,6 +27,24 @@ def replacement_summary():
     return ok(PlantReplacementService.summary(replacement_filters(request.args)))
 
 
+@bp.get("/plant-replacements/cost-report")
+def replacement_cost_report():
+    """更换费用按绿地 × 时间段（月/季/年）归属，筛选条件与列表一致。"""
+
+    group_by = (request.args.get("group_by") or "month").strip()
+    return ok(PlantReplacementService.cost_report(replacement_filters(request.args), group_by))
+
+
+@bp.post("/plant-replacements/import")
+def import_replacements():
+    """批量导入更换明细：batch_no 为幂等键，同批次重复提交不重复入账。"""
+
+    result, replayed = PlantReplacementService.import_batch(json_body())
+    if replayed:
+        return ok(result, message="该批次已导入过，返回首次结果，未重复入账")
+    return created(result, message="批量导入完成")
+
+
 @bp.post("/plant-replacements")
 def create_replacement():
     payload = validate_plant_replacement(json_body())

@@ -28,19 +28,22 @@
       </el-descriptions>
 
       <div v-if="detail.replacements?.length" class="linked-replacements">
-        <div class="panel-title">关联的绿植更换记录</div>
+        <div class="panel-title">关联的绿植更换记录（{{ detail.replacements.length }} 条）</div>
         <el-table :data="detail.replacements" size="small" border>
           <el-table-column prop="replacement_no" label="编号" width="150" />
-          <el-table-column prop="plant_name" label="植株" width="120" />
-          <el-table-column label="数量" width="110">
+          <el-table-column prop="plant_name" label="植株" width="110" />
+          <el-table-column label="数量" width="100">
             <template #default="{ row }">{{ formatNumber(row.quantity) }} {{ row.unit_label }}</template>
           </el-table-column>
-          <el-table-column label="更换原因" width="120">
+          <el-table-column label="更换原因" width="110">
             <template #default="{ row }">
               <EnumTag group="replacement_reason" :value="row.reason" :label="row.reason_label" />
             </template>
           </el-table-column>
-          <el-table-column label="金额" width="120" align="right">
+          <el-table-column label="供苗单位" min-width="130" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.supplier || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="金额" width="110" align="right">
             <template #default="{ row }">{{ formatCurrency(row.amount) }}</template>
           </el-table-column>
         </el-table>

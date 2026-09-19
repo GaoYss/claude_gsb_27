@@ -96,7 +96,7 @@ def record_filters(args):
 
 def replacement_filters(args):
     filters = {}
-    for key in ("green_space_id", "maintenance_record_id"):
+    for key in ("green_space_id", "maintenance_record_id", "task_id"):
         value = _int(args, key)
         if value:
             filters[key] = value
@@ -104,6 +104,9 @@ def replacement_filters(args):
         value = _enum(args, key, group_key)
         if value:
             filters[key] = value
+    supplier = _text(args, "supplier")
+    if supplier:
+        filters["supplier"] = supplier
     keyword = _text(args, "keyword")
     if keyword:
         filters["keyword"] = keyword

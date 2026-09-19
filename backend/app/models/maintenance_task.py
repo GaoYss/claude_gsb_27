@@ -31,7 +31,15 @@ class MaintenanceTask(TimestampMixin, db.Model):
     records = db.relationship(
         "MaintenanceRecord",
         back_populates="task",
+        foreign_keys="MaintenanceRecord.task_id",
         order_by="MaintenanceRecord.record_date.desc(), MaintenanceRecord.id.desc()",
+    )
+    # 经 task_id 直连的更换明细；任务删除时由 service 层置空 task_id
+    replacements = db.relationship(
+        "PlantReplacement",
+        back_populates="task",
+        foreign_keys="PlantReplacement.task_id",
+        order_by="PlantReplacement.replace_date.desc(), PlantReplacement.id.desc()",
     )
 
     @property

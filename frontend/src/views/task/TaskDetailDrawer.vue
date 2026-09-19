@@ -51,6 +51,36 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div class="table-toolbar">
+        <span class="panel-title">关联绿植更换明细</span>
+        <el-button v-if="detail.green_space" link type="primary"
+                   @click="goReplacements">去登记更换记录</el-button>
+      </div>
+      <el-table :data="detail.replacements || []" size="small" border empty-text="该任务暂无关联更换明细">
+        <el-table-column prop="replacement_no" label="更换编号" width="150" />
+        <el-table-column label="植株" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.plant_name }}
+            <span class="cell-sub">{{ row.spec || '' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="110">
+          <template #default="{ row }">{{ formatNumber(row.quantity) }} {{ row.unit_label }}</template>
+        </el-table-column>
+        <el-table-column label="更换原因" width="110">
+          <template #default="{ row }">
+            <EnumTag group="replacement_reason" :value="row.reason" :label="row.reason_label" />
+          </template>
+        </el-table-column>
+        <el-table-column prop="replace_date" label="更换日期" width="100" />
+        <el-table-column prop="supplier" label="供苗单位" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.supplier || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="金额" width="110" align="right">
+          <template #default="{ row }">{{ formatCurrency(row.amount) }}</template>
+        </el-table-column>
+      </el-table>
     </div>
 
     <template #footer>
@@ -105,6 +135,14 @@ function goRecords() {
   close()
 }
 
+function goReplacements() {
+  router.push({
+    name: 'replacement-list',
+    query: { task_id: currentId.value, green_space_id: detail.value.green_space_id },
+  })
+  close()
+}
+
 async function complete() {
   try {
     await maintenanceTaskApi.changeStatus(currentId.value, { status: 'completed' })
@@ -132,5 +170,11 @@ defineExpose({ open })
 
 .panel-title {
   font-weight: 600;
+}
+
+.cell-sub {
+  display: block;
+  color: #909399;
+  font-size: 12px;
 }
 </style>

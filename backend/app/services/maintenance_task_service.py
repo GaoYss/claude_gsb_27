@@ -13,6 +13,7 @@ from ..utils.numbers import to_float
 from ..utils.sorting import parse_sort
 from .base_service import BaseService
 from .code_generator import daily_prefix
+from .plant_replacement_service import PlantReplacementService
 
 
 class MaintenanceTaskService(BaseService):
@@ -107,10 +108,28 @@ class MaintenanceTaskService(BaseService):
             .correlate(MaintenanceTask)
             .scalar_subquery()
         )
+        # 关联更换明细：task_id 直连，或经名下养护记录间接关联
+        linked_record_ids = db.select(MaintenanceRecord.id).where(
+            MaintenanceRecord.task_id == MaintenanceTask.id
+        )
+        replacement_count = (
+            db.select(func.count(PlantReplacement.id))
+            .where(
+                or_(
+                    PlantReplacement.task_id == MaintenanceTask.id,
+                    PlantReplacement.maintenance_record_id.in_(
+                        linked_record_ids.correlate(MaintenanceTask)
+                    ),
+                )
+            )
+            .correlate(MaintenanceTask)
+            .scalar_subquery()
+        )
         query = db.session.query(
             MaintenanceTask,
             record_count.label("record_count"),
             qualified_count.label("qualified_count"),
+            replacement_count.label("replacement_count"),
         )
         query = cls._apply_filters(query, filters)
         query = query.order_by(parse_sort(args, cls.SORTABLE, MaintenanceTask.plan_date.desc()))
@@ -118,11 +137,12 @@ class MaintenanceTaskService(BaseService):
 
     @classmethod
     def serialize_row(cls, row):
-        task, record_count, qualified_count = row
+        task, record_count, qualified_count, replacement_count = row
         data = task.to_dict()
         data["progress"] = {
             "record_count": record_count or 0,
             "qualified_count": qualified_count or 0,
+            "replacement_count": replacement_count or 0,
         }
         return data
 
@@ -135,23 +155,18 @@ class MaintenanceTaskService(BaseService):
             .order_by(MaintenanceRecord.record_date.desc(), MaintenanceRecord.id.desc())
             .all()
         )
-        replacement_stats = db.session.query(
-            func.count(PlantReplacement.id),
-            func.coalesce(func.sum(PlantReplacement.quantity), 0),
-            func.coalesce(func.sum(PlantReplacement.amount), 0),
-        ).join(MaintenanceRecord, PlantReplacement.maintenance_record_id == MaintenanceRecord.id) \
-            .filter(MaintenanceRecord.task_id == task.id).one()
-
         data = task.to_dict(detail=True)
         data["records"] = [item.to_dict() for item in records]
+        replacements = PlantReplacementService.list_by_task(task)
+        data["replacements"] = [item.to_dict() for item in replacements]
         data["progress"] = {
             "record_count": len(records),
             "qualified_count": sum(1 for item in records if item.quality_result == "qualified"),
             "unqualified_count": sum(1 for item in records if item.quality_result == "unqualified"),
             "total_work_hours": to_float(sum((item.work_hours or 0) for item in records)) or 0,
-            "replacement_count": replacement_stats[0] or 0,
-            "replacement_quantity": to_float(replacement_stats[1]) or 0,
-            "replacement_amount": to_float(replacement_stats[2]) or 0,
+            "replacement_count": len(replacements),
+            "replacement_quantity": to_float(sum((item.quantity or 0) for item in replacements)) or 0,
+            "replacement_amount": to_float(sum((item.amount or 0) for item in replacements)) or 0,
             "last_record_date": format_date(records[0].record_date) if records else None,
         }
         return data
@@ -202,19 +217,32 @@ class MaintenanceTaskService(BaseService):
             .scalar()
             or 0
         )
-        if record_count and not force:
+        # 关联更换明细：自身 task_id 直连，或经名下养护记录间接关联
+        replacement_count = PlantReplacementService.count_by_task(task)
+        if (record_count or replacement_count) and not force:
             raise ConflictError(
-                f"该任务已登记 {record_count} 条养护记录，请确认后再删除",
-                details={"maintenance_record": record_count},
+                f"该任务已登记 {record_count} 条养护记录、{replacement_count} 条绿植更换明细，"
+                "删除后记录与更换会保留并解除任务关联（保留任务编号快照），请确认后再删除",
+                details={
+                    "maintenance_record": record_count,
+                    "plant_replacement": replacement_count,
+                },
             )
-        if record_count:
-            # 强制删除时保留养护记录，仅解除任务关联，避免历史数据丢失
+        if record_count or replacement_count:
+            # 先处理更换明细：置空 task_id 并冻结任务快照（须在记录解绑之前，间接关联才查得到）
+            detached_replacements = PlantReplacementService.detach_task_links(task)
+            # 再保留养护记录，仅解除任务关联，避免历史履历丢失
             db.session.query(MaintenanceRecord).filter(
                 MaintenanceRecord.task_id == task.id
             ).update({MaintenanceRecord.task_id: None}, synchronize_session=False)
+        else:
+            detached_replacements = 0
         db.session.delete(task)
         db.session.commit()
-        return {"detached_records": record_count}
+        return {
+            "detached_records": record_count,
+            "detached_replacements": detached_replacements,
+        }
 
     @classmethod
     def status_summary(cls):

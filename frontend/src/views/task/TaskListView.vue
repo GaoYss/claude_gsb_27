@@ -71,10 +71,13 @@
         <el-table-column prop="executor" label="执行班组" width="100">
           <template #default="{ row }">{{ row.executor || '-' }}</template>
         </el-table-column>
-        <el-table-column label="执行进度" width="112">
+        <el-table-column label="执行进度" width="120">
           <template #default="{ row }">
             <div>{{ row.progress.record_count }} 条记录</div>
-            <div class="cell-sub">合格 {{ row.progress.qualified_count }} 条</div>
+            <div class="cell-sub">
+              合格 {{ row.progress.qualified_count }} 条
+              <template v-if="row.progress.replacement_count"> · 更换 {{ row.progress.replacement_count }}</template>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="92">
@@ -176,15 +179,17 @@ async function changeStatus(row, status) {
 
 async function remove(row) {
   try {
-    const hasRecords = row.progress.record_count > 0
+    const recordCount = row.progress.record_count || 0
+    const replacementCount = row.progress.replacement_count || 0
+    const hasLinks = recordCount > 0 || replacementCount > 0
     await ElMessageBox.confirm(
-      hasRecords
-        ? `该任务已登记 ${row.progress.record_count} 条养护记录，删除任务后养护记录会保留但不再关联任务，是否继续？`
+      hasLinks
+        ? `该任务关联 ${recordCount} 条养护记录、${replacementCount} 条绿植更换明细。删除任务后，养护记录与更换记录都会保留，仅解除任务关联并留存任务编号快照，是否继续？`
         : `确认删除任务「${row.title}」吗？`,
       '删除确认',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
-    await maintenanceTaskApi.remove(row.id, hasRecords ? { force: true } : undefined)
+    await maintenanceTaskApi.remove(row.id, hasLinks ? { force: true } : undefined)
     ElMessage.success('养护任务已删除')
     await load()
   } catch (error) {

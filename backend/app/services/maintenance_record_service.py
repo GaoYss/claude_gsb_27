@@ -13,6 +13,7 @@ from ..utils.numbers import to_float
 from ..utils.sorting import parse_sort
 from .base_service import BaseService
 from .code_generator import daily_prefix
+from .plant_replacement_service import PlantReplacementService
 
 
 class MaintenanceRecordService(BaseService):
@@ -123,13 +124,19 @@ class MaintenanceRecordService(BaseService):
 
     @classmethod
     def after_update(cls, instance, payload):
-        cls.sync_task_status(getattr(instance, "_previous_task_id", None))
+        # 记录改挂/移出任务时，其名下更换明细的任务外键与快照要同步重算
+        previous_task_id = getattr(instance, "_previous_task_id", None)
+        if previous_task_id != instance.task_id:
+            PlantReplacementService.refresh_record_links(instance)
+        cls.sync_task_status(previous_task_id)
         cls.sync_task_status(instance.task_id)
 
     @classmethod
     def delete(cls, obj_id):
         instance = cls.get(obj_id)
         task_id = instance.task_id
+        # 先显式解除更换明细对记录的外键，保留记录编号快照，避免履历出处丢失
+        PlantReplacementService.detach_record_links(instance.id)
         db.session.delete(instance)
         db.session.flush()
         cls.sync_task_status(task_id)

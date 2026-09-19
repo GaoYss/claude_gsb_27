@@ -2,9 +2,18 @@
   <div class="page">
     <PageHeader title="绿植更换记录" description="登记绿地内植株的更换、补植与品种改造，自动核算更换金额">
       <template #actions>
+        <el-button :icon="'Coin'" @click="costDialog.open()">费用归属报表</el-button>
+        <el-button :icon="'Upload'" @click="importDialog.open()">批量导入</el-button>
         <el-button type="primary" :icon="'Plus'" @click="formDialog.open()">登记更换记录</el-button>
       </template>
     </PageHeader>
+
+    <el-alert v-if="filters.task_id" type="info" :closable="false" show-icon class="task-banner">
+      <template #title>
+        正在查看任务 #{{ filters.task_id }} 关联的更换明细
+        <el-button link type="primary" size="small" @click="clearTaskFilter">查看全部更换记录</el-button>
+      </template>
+    </el-alert>
 
     <div class="panel">
       <div class="filter-bar">
@@ -57,7 +66,28 @@
               <span><b>单价：</b>{{ formatCurrency(row.unit_price) }}</span>
               <span><b>供苗单位：</b>{{ row.supplier || '-' }}</span>
               <span><b>登记人：</b>{{ row.operator || '-' }}</span>
-              <span><b>关联养护记录：</b>{{ row.record ? `${row.record.record_no}（${formatDate(row.record.record_date)}）` : '未关联' }}</span>
+              <span>
+                <b>来源任务：</b>
+                <template v-if="row.task">
+                  {{ row.task.task_no }} · {{ row.task.title }}
+                  <EnumTag group="task_status" :value="row.task.status" :label="undefined" />
+                </template>
+                <template v-else-if="row.task_snapshot">
+                  {{ row.task_snapshot.task_no }} · {{ row.task_snapshot.title }}
+                  <el-tag size="small" type="info" effect="plain">任务已删除</el-tag>
+                </template>
+                <template v-else>-</template>
+              </span>
+              <span>
+                <b>关联养护记录：</b>
+                <template v-if="row.record">{{ row.record.record_no }}（{{ formatDate(row.record.record_date) }}）</template>
+                <template v-else-if="row.record_snapshot">
+                  {{ row.record_snapshot.record_no }}
+                  <el-tag size="small" type="info" effect="plain">记录已删除</el-tag>
+                </template>
+                <template v-else>未关联</template>
+              </span>
+              <span v-if="row.import_batch_no"><b>导入批次：</b>{{ row.import_batch_no }}</span>
               <span><b>登记时间：</b>{{ formatDateTime(row.created_at) }}</span>
               <span v-if="row.remark"><b>备注：</b>{{ row.remark }}</span>
             </div>
@@ -66,6 +96,16 @@
         <el-table-column prop="replacement_no" label="编号" width="150" />
         <el-table-column label="所属绿地" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.green_space?.name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="来源任务" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            <template v-if="row.task">{{ row.task.task_no }}</template>
+            <template v-else-if="row.task_snapshot">
+              <span>{{ row.task_snapshot.task_no }}</span>
+              <el-tag size="small" type="info" effect="plain" class="deleted-tag">任务已删</el-tag>
+            </template>
+            <span v-else class="cell-sub">-</span>
+          </template>
         </el-table-column>
         <el-table-column label="植株名称" width="150">
           <template #default="{ row }">
@@ -87,6 +127,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="replace_date" label="更换日期" width="105" />
+        <el-table-column prop="supplier" label="供苗单位" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.supplier || '-' }}</template>
+        </el-table-column>
         <el-table-column label="金额" width="115" align="right">
           <template #default="{ row }">
             <span :class="{ 'amount-missing': row.amount === null }">{{ formatCurrency(row.amount) }}</span>
@@ -137,12 +180,14 @@
     </div>
 
     <ReplacementFormDialog ref="formDialog" @saved="load" />
+    <CostReportDialog ref="costDialog" />
+    <ReplacementImportDialog ref="importDialog" @imported="load" />
   </div>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { plantReplacementApi } from '@/api'
@@ -154,10 +199,15 @@ import { useEnumOptions } from '@/composables/useEnumOptions'
 import { useListQuery } from '@/composables/useListQuery'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/format'
 
+import CostReportDialog from './CostReportDialog.vue'
 import ReplacementFormDialog from './ReplacementFormDialog.vue'
+import ReplacementImportDialog from './ReplacementImportDialog.vue'
 
 const route = useRoute()
+const router = useRouter()
 const formDialog = ref(null)
+const costDialog = ref(null)
+const importDialog = ref(null)
 const dateRange = ref([])
 
 const { options: categoryOptions } = useEnumOptions('plant_category')
@@ -168,12 +218,19 @@ const { filters, meta, items, summary, loading, load, search, resetFilters, hand
     initialFilters: {
       keyword: '',
       green_space_id: route.query.green_space_id ? Number(route.query.green_space_id) : null,
+      task_id: route.query.task_id ? Number(route.query.task_id) : null,
       plant_category: '',
       reason: '',
       date_from: '',
       date_to: '',
     },
   })
+
+function clearTaskFilter() {
+  filters.task_id = null
+  router.replace({ query: {} })
+  search()
+}
 
 const topReason = computed(() => {
   const rows = [...(summary.value?.by_reason || [])]
@@ -215,6 +272,18 @@ async function remove(row) {
 </script>
 
 <style scoped>
+.task-banner {
+  margin-bottom: 12px;
+}
+
+.deleted-tag {
+  margin-left: 6px;
+}
+
+.cell-sub {
+  color: #909399;
+}
+
 .pager {
   margin-top: 16px;
   justify-content: flex-end;
